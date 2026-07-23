@@ -49,6 +49,9 @@ hr{border:0;border-top:1px solid var(--line);margin:20px 0}
 .position-label{width:145px;color:#dfe4eb;font-size:13px;padding-top:7px}
 .notice{background:#11151c;border-left:3px solid #bcae89;padding:12px 14px;color:#cfd5de;font-size:13px;line-height:1.7}
 .footer-actions{display:flex;justify-content:center;gap:12px;padding:0 20px 22px}
+.mode-switch{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+.mode-btn{border:1px solid #414b5b;background:#121720;color:#cbd2dc;border-radius:8px;padding:10px 14px}
+.mode-btn.active{background:#cdbf9b;color:#17140e;border-color:#cdbf9b;font-weight:700}
 @media(max-width:800px){.app{width:100%;padding:14px}header{align-items:start;flex-direction:column}.grid{grid-template-columns:1fr}.field.full{grid-column:auto}.panel{padding:15px}}
 </style>
 </head>
@@ -82,6 +85,11 @@ hr{border:0;border-top:1px solid var(--line);margin:20px 0}
   </div>
 
   <div class="panel" id="layout">
+    <div class="mode-switch">
+      <button type="button" class="mode-btn" id="imageModeBtn">SS調整モード</button>
+      <button type="button" class="mode-btn active" id="layoutModeBtn">レイアウトモード</button>
+    </div>
+    <div class="notice" style="margin-bottom:16px">レイアウトモード中は、プレビュー上でタイトルグループ・紹介文・目的ロゴを直接ドラッグして移動できます。SSを動かしたいときはSS調整モードへ切り替えてください。</div>
     <div class="field" style="max-width:460px"><label>レイアウトプリセット</label><select id="preset"><option value="a">左上タイトル・右下紹介</option><option value="b">右上タイトル・左下紹介</option><option value="c">上中央タイトル・下中央紹介</option><option value="d">左下タイトル・右上紹介</option><option value="custom">カスタム</option></select></div>
     <hr>
     <h3 class="section-title">要素の位置</h3>
@@ -137,22 +145,25 @@ const plate=new Image(); plate.src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUg
 const bg=new Image(); let hasBg=false;
 const defaults={spotName:'隠れ滝',location:'東ラノシア X31 Y24',condition:'昼間・快晴',description:'アジェレス川がブラッドショアの海へ注ぐところにある隠れ滝。\n日の出の頃も美しい景色となる。',logoType:'DATE SPOT',customLogo:'',titlePos:'tl',descPos:'br',logoPos:'tr',titleX:0,titleY:0,descX:0,descY:0,logoX:0,logoY:0,titleSize:88,subSize:32,descSize:30,logoSize:26,plateWidth:820,plateOpacity:100,descWidth:760,boxOpacity:42,titleAlign:'left',descAlign:'center',showPlate:true,flipPlate:false,showBox:true,showCredit:true,imageScale:100,imageX:0,imageY:0};
 let state={...defaults};
+const ui={mode:'layout',dragType:null,hoverType:null,dragging:false,lastX:0,lastY:0};
 const positionNames={tl:'左上',tc:'上中央',tr:'右上',ml:'左中央',mc:'中央',mr:'右中央',bl:'左下',bc:'下中央',br:'右下'};
 const positionKeys=Object.keys(positionNames);
+const sourceRect={x:0,y:500,w:1536,h:460};
+
 function makePositions(){
  const host=$('#positionControls'); host.innerHTML='';
  [['titlePos','タイトル＆サブ情報'],['descPos','紹介文'],['logoPos','目的ロゴ']].forEach(([key,label])=>{
   const row=document.createElement('div'); row.className='position-block'; row.style.marginBottom='16px';
   row.innerHTML=`<div class="position-label">${label}</div><div class="position-grid"></div><div class="small current-pos"></div>`;
   const grid=row.querySelector('.position-grid');
-  positionKeys.forEach(p=>{const b=document.createElement('button'); b.className='pos'; b.type='button'; b.dataset.key=key;b.dataset.pos=p;b.title=positionNames[p];b.textContent={tl:'↖',tc:'↑',tr:'↗',ml:'←',mc:'●',mr:'→',bl:'↙',bc:'↓',br:'↘'}[p];grid.appendChild(b)});
+  positionKeys.forEach(p=>{const b=document.createElement('button'); b.className='pos'; b.type='button'; b.dataset.key=key; b.dataset.pos=p; b.title=positionNames[p]; b.textContent={tl:'↖',tc:'↑',tr:'↗',ml:'←',mc:'●',mr:'→',bl:'↙',bc:'↓',br:'↘'}[p]; grid.appendChild(b)});
   host.appendChild(row);
- })
+ });
  updatePositionButtons();
 }
 function updatePositionButtons(){
  $$('.pos').forEach(b=>b.classList.toggle('active',state[b.dataset.key]===b.dataset.pos));
- $$('#positionControls .position-block').forEach((r,i)=>{const key=['titlePos','descPos','logoPos'][i];r.querySelector('.current-pos').textContent=positionNames[state[key]]})
+ $$('#positionControls .position-block').forEach((r,i)=>{const key=['titlePos','descPos','logoPos'][i]; r.querySelector('.current-pos').textContent=positionNames[state[key]]});
 }
 function anchor(pos,w,h,margin=55){
  const col=pos[1], row=pos[0]; let x=margin,y=margin;
@@ -160,100 +171,63 @@ function anchor(pos,w,h,margin=55){
  if(row==='m') y=(900-h)/2; else if(row==='b') y=900-h-margin;
  return {x,y};
 }
-function drawCover(img,scalePct,xOff,yOff){
- const base=Math.max(1600/img.width,900/img.height), s=base*(scalePct/100), w=img.width*s,h=img.height*s;
- ctx.drawImage(img,(1600-w)/2+xOff,(900-h)/2+yOff,w,h);
+function toCanvasPoint(e){const rect=canvas.getBoundingClientRect(); return {x:(e.clientX-rect.left)*(1600/rect.width), y:(e.clientY-rect.top)*(900/rect.height)};}
+function syncRangeValue(id,value){const el=$('#'+id); if(!el) return; const v=Math.round(value); el.value=v; if(el.nextElementSibling) el.nextElementSibling.value=v;}
+function updateHint(){ $('.hint').textContent = ui.mode==='layout' ? 'レイアウトモード：タイトル・紹介文・ロゴをドラッグして移動' : 'SS調整モード：SSはドラッグで位置調整／ホイールで拡大縮小'; }
+function setMode(mode){ ui.mode=mode; $('#layoutModeBtn').classList.toggle('active',mode==='layout'); $('#imageModeBtn').classList.toggle('active',mode==='image'); updateHint(); render(); }
+function drawCover(img,scalePct,xOff,yOff){ const base=Math.max(1600/img.width,900/img.height), s=base*(scalePct/100), w=img.width*s,h=img.height*s; ctx.drawImage(img,(1600-w)/2+xOff,(900-h)/2+yOff,w,h); }
+function outlinedText(text,x,y,font,align='left',lineWidth=7){ ctx.save(); ctx.font=font; ctx.textAlign=align; ctx.textBaseline='alphabetic'; ctx.lineJoin='round'; ctx.strokeStyle='rgba(0,0,0,.9)'; ctx.lineWidth=lineWidth; ctx.strokeText(text,x,y); ctx.fillStyle='white'; ctx.fillText(text,x,y); ctx.restore(); }
+function wrapLines(text,maxWidth,font){ ctx.save(); ctx.font=font; const out=[]; for(const raw of text.split(/\n/)){ if(!raw){out.push(''); continue} let line=''; for(const ch of raw){const test=line+ch; if(ctx.measureText(test).width>maxWidth&&line){out.push(line); line=ch}else line=test} out.push(line)} ctx.restore(); return out; }
+function getTitleMetrics(){
+ const pw=state.plateWidth, ph=pw*(sourceRect.h/sourceRect.w), a=anchor(state.titlePos,pw,ph,25), x=a.x+state.titleX, y=a.y+state.titleY;
+ const scale=pw/sourceRect.w, lineY=y+(856-sourceRect.y)*scale, inset=82*scale; let tx=x+inset, align=state.titleAlign;
+ if(state.flipPlate){ tx=x+pw-inset; if(align==='left') align='right'; else if(align==='right') align='left'; }
+ return {x,y,w:pw,h:ph,tx,align,titleFont:`700 ${state.titleSize}px "Yu Gothic UI","Meiryo",sans-serif`,subFont:`600 ${state.subSize}px "Yu Gothic UI","Meiryo",sans-serif`,subText:[state.location,state.condition].filter(Boolean).join('　　'),titleY:lineY-18*scale,subY:lineY+state.subSize*1.35};
 }
-function outlinedText(text,x,y,font,align='left',lineWidth=7){
- ctx.save();ctx.font=font;ctx.textAlign=align;ctx.textBaseline='alphabetic';ctx.lineJoin='round';ctx.strokeStyle='rgba(0,0,0,.9)';ctx.lineWidth=lineWidth;ctx.strokeText(text,x,y);ctx.fillStyle='white';ctx.fillText(text,x,y);ctx.restore();
-}
-function wrapLines(text,maxWidth,font){
- ctx.save();ctx.font=font;const out=[];for(const raw of text.split(/\n/)){if(!raw){out.push('');continue}let line='';for(const ch of raw){const test=line+ch;if(ctx.measureText(test).width>maxWidth&&line){out.push(line);line=ch}else line=test}out.push(line)}ctx.restore();return out;
-}
+function getDescriptionMetrics(){ const w=state.descWidth,pad=34,font=`500 ${state.descSize}px "Yu Gothic UI","Meiryo",sans-serif`,lines=wrapLines(state.description||'',w-pad*2,font),lh=state.descSize*1.55,h=Math.max(100,Math.max(1,lines.length)*lh+pad*2),a=anchor(state.descPos,w,h,55),x=a.x+state.descX,y=a.y+state.descY; return {x,y,w,h,pad,font,lines,lh}; }
+function getLogoMetrics(){ const text=state.logoType==='custom'?state.customLogo:state.logoType; if(!text) return null; ctx.save(); ctx.font=`700 ${state.logoSize}px Georgia,serif`; const tw=ctx.measureText(text).width; ctx.restore(); const w=tw+58,h=state.logoSize+28,a=anchor(state.logoPos,w,h,55),x=a.x+state.logoX,y=a.y+state.logoY; return {text,x,y,w,h}; }
+function getDragItems(){ const items=[]; const t=getTitleMetrics(); items.push({type:'title',x:t.x,y:t.y,w:t.w,h:t.h}); if(state.description){const d=getDescriptionMetrics(); items.push({type:'desc',x:d.x,y:d.y,w:d.w,h:d.h});} const l=getLogoMetrics(); if(l) items.push({type:'logo',x:l.x,y:l.y,w:l.w,h:l.h}); return items; }
+function hitTest(x,y){ const items=getDragItems(); for(let i=items.length-1;i>=0;i--){const it=items[i]; if(x>=it.x&&x<=it.x+it.w&&y>=it.y&&y<=it.y+it.h) return it.type;} return null; }
+function drawSelectionRect(rect,active=false){ ctx.save(); ctx.strokeStyle=active?'rgba(255,225,150,.95)':'rgba(255,255,255,.65)'; ctx.lineWidth=active?3:2; ctx.setLineDash(active?[12,7]:[7,6]); ctx.strokeRect(rect.x,rect.y,rect.w,rect.h); ctx.restore(); }
 function render(){
- ctx.clearRect(0,0,1600,900);ctx.fillStyle='#141414';ctx.fillRect(0,0,1600,900);
- if(hasBg) drawCover(bg,state.imageScale,state.imageX,state.imageY); else {const g=ctx.createLinearGradient(0,0,1600,900);g.addColorStop(0,'#303843');g.addColorStop(1,'#0b0d10');ctx.fillStyle=g;ctx.fillRect(0,0,1600,900);ctx.fillStyle='#ffffffaa';ctx.font='32px sans-serif';ctx.textAlign='center';ctx.fillText('背景SSをアップロードしてください',800,450)}
+ ctx.clearRect(0,0,1600,900); ctx.fillStyle='#141414'; ctx.fillRect(0,0,1600,900);
+ if(hasBg) drawCover(bg,state.imageScale,state.imageX,state.imageY); else {const g=ctx.createLinearGradient(0,0,1600,900); g.addColorStop(0,'#303843'); g.addColorStop(1,'#0b0d10'); ctx.fillStyle=g; ctx.fillRect(0,0,1600,900); ctx.fillStyle='#ffffffaa'; ctx.font='32px sans-serif'; ctx.textAlign='center'; ctx.fillText('背景SSをアップロードしてください',800,450)}
  drawTitle(); drawDescription(); drawLogo();
- if(state.showCredit){ctx.save();ctx.font='17px sans-serif';ctx.textAlign='right';ctx.fillStyle='rgba(255,255,255,.85)';ctx.shadowColor='black';ctx.shadowBlur=4;ctx.fillText('FINAL FANTASY XIV © SQUARE ENIX',1560,870);ctx.restore()}
+ if(ui.mode==='layout'){ for(const it of getDragItems()){ if(ui.hoverType===it.type||ui.dragType===it.type) drawSelectionRect(it, ui.dragType===it.type); } }
+ if(state.showCredit){ctx.save(); ctx.font='17px sans-serif'; ctx.textAlign='right'; ctx.fillStyle='rgba(255,255,255,.85)'; ctx.shadowColor='black'; ctx.shadowBlur=4; ctx.fillText('FINAL FANTASY XIV © SQUARE ENIX',1560,870); ctx.restore()}
 }
-function drawTitle(){
- // タイトル素材・スポット名・サブ情報は一体の「タイトルグループ」として扱う。
- // スポット名は横棒の上、マップ名／座標／時間帯・天候は横棒の下に置く。
- const sourceX=0, sourceY=500, sourceW=1536, sourceH=460;
- const pw=state.plateWidth, ph=pw*(sourceH/sourceW);
- const a=anchor(state.titlePos,pw,ph,25);
- const px=a.x+state.titleX, py=a.y+state.titleY;
+function drawTitle(){ const m=getTitleMetrics(); if(state.showPlate&&plate.complete){ ctx.save(); ctx.globalAlpha=state.plateOpacity/100; if(state.flipPlate){ ctx.translate(m.x+m.w,m.y); ctx.scale(-1,1); ctx.drawImage(plate,sourceRect.x,sourceRect.y,sourceRect.w,sourceRect.h,0,0,m.w,m.h); } else { ctx.drawImage(plate,sourceRect.x,sourceRect.y,sourceRect.w,sourceRect.h,m.x,m.y,m.w,m.h); } ctx.restore(); } outlinedText(state.spotName||'',m.tx,m.titleY,m.titleFont,m.align,9); outlinedText(m.subText,m.tx,m.subY,m.subFont,m.align,6); }
+function drawDescription(){ if(!state.description) return; const d=getDescriptionMetrics(); if(state.showBox){ctx.save(); ctx.fillStyle=`rgba(15,15,15,${state.boxOpacity/100})`; ctx.fillRect(d.x,d.y,d.w,d.h); ctx.restore()} ctx.save(); ctx.font=d.font; ctx.textAlign=state.descAlign; ctx.textBaseline='top'; ctx.fillStyle='white'; ctx.shadowColor='rgba(0,0,0,.95)'; ctx.shadowBlur=6; ctx.shadowOffsetY=2; let tx=d.x+d.pad; if(state.descAlign==='center') tx=d.x+d.w/2; if(state.descAlign==='right') tx=d.x+d.w-d.pad; d.lines.forEach((ln,i)=>ctx.fillText(ln,tx,d.y+d.pad+i*d.lh)); ctx.restore(); }
+function drawLogo(){ const l=getLogoMetrics(); if(!l) return; ctx.save(); ctx.font=`700 ${state.logoSize}px Georgia,serif`; ctx.fillStyle='rgba(0,0,0,.50)'; ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=2; ctx.fillRect(l.x,l.y,l.w,l.h); ctx.strokeRect(l.x,l.y,l.w,l.h); ctx.fillStyle='white'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(l.text,l.x+l.w/2,l.y+l.h/2+1); ctx.restore(); }
+function bindText(id,key){ const el=$(id); el.value=state[key]; el.addEventListener('input',()=>{ state[key]=el.value; if(key==='description') $('#count').textContent=el.value.length; saveState(); render(); }); }
+function bindRange(id,key){ const el=$(id), out=el.nextElementSibling; el.value=state[key]; out.value=state[key]; el.addEventListener('input',()=>{ state[key]=+el.value; out.value=el.value; saveState(); render(); }); }
+function saveState(){ try{localStorage.setItem('eorzeaSpotCard',JSON.stringify(state))}catch(e){} }
+function loadState(){ try{ const s=JSON.parse(localStorage.getItem('eorzeaSpotCard')); if(s){ state={...defaults,...s}; if(!Number.isFinite(state.plateWidth)||state.plateWidth>1100||state.plateWidth<420) state.plateWidth=820; } }catch(e){} }
+function syncUI(){ ['#spotName','#location','#condition','#description','#customLogo'].forEach((id,i)=>{const keys=['spotName','location','condition','description','customLogo']; $(id).value=state[keys[i]]}); $('#count').textContent=state.description.length; $('#logoType').value=state.logoType; $('#customLogoWrap').style.display=state.logoType==='custom'?'grid':'none'; ['titleX','titleY','descX','descY','logoX','logoY','titleSize','subSize','descSize','logoSize','plateWidth','plateOpacity','descWidth','boxOpacity','imageScale','imageX','imageY'].forEach(k=>{const el=$('#'+k); el.value=state[k]; el.nextElementSibling.value=state[k]}); ['titleAlign','descAlign'].forEach(k=>$('#'+k).value=state[k]); ['showPlate','flipPlate','showBox','showCredit'].forEach(k=>$('#'+k).checked=state[k]); updatePositionButtons(); }
 
- if(state.showPlate&&plate.complete){
-  ctx.save();
-  ctx.globalAlpha=state.plateOpacity/100;
-  if(state.flipPlate){
-   ctx.translate(px+pw,py);
-   ctx.scale(-1,1);
-   ctx.drawImage(plate,sourceX,sourceY,sourceW,sourceH,0,0,pw,ph);
-  }else{
-   ctx.drawImage(plate,sourceX,sourceY,sourceW,sourceH,px,py,pw,ph);
-  }
-  ctx.restore();
- }
-
- const scale=pw/sourceW;
- const lineY=py+(856-sourceY)*scale;
- const inset=82*scale;
- let tx=px+inset;
- let align=state.titleAlign;
- if(state.flipPlate){
-  tx=px+pw-inset;
-  if(align==='left') align='right';
-  else if(align==='right') align='left';
- }
-
- const titleFont=`700 ${state.titleSize}px "Yu Gothic UI","Meiryo",sans-serif`;
- const titleY=lineY-18*scale;
- outlinedText(state.spotName||'',tx,titleY,titleFont,align,9);
-
- const sub=[state.location,state.condition].filter(Boolean).join('　　');
- const subY=lineY+state.subSize*1.35;
- outlinedText(sub,tx,subY,`600 ${state.subSize}px "Yu Gothic UI","Meiryo",sans-serif`,align,6);
-}
-function drawDescription(){
- if(!state.description)return; const w=state.descWidth, pad=34, font=`500 ${state.descSize}px "Yu Gothic UI","Meiryo",sans-serif`; const lines=wrapLines(state.description,w-pad*2,font); const lh=state.descSize*1.55,h=Math.max(100,lines.length*lh+pad*2); const a=anchor(state.descPos,w,h,55); const x=a.x+state.descX,y=a.y+state.descY;
- if(state.showBox){ctx.save();ctx.fillStyle=`rgba(15,15,15,${state.boxOpacity/100})`;ctx.fillRect(x,y,w,h);ctx.restore()}
- ctx.save();ctx.font=font;ctx.textAlign=state.descAlign;ctx.textBaseline='top';ctx.fillStyle='white';ctx.shadowColor='rgba(0,0,0,.95)';ctx.shadowBlur=6;ctx.shadowOffsetY=2;let tx=x+pad;if(state.descAlign==='center')tx=x+w/2;if(state.descAlign==='right')tx=x+w-pad;lines.forEach((ln,i)=>ctx.fillText(ln,tx,y+pad+i*lh));ctx.restore();
-}
-function drawLogo(){
- let text=state.logoType==='custom'?state.customLogo:state.logoType;if(!text)return;ctx.save();ctx.font=`700 ${state.logoSize}px Georgia,serif`;const tw=ctx.measureText(text).width,w=tw+58,h=state.logoSize+28;const a=anchor(state.logoPos,w,h,55);const x=a.x+state.logoX,y=a.y+state.logoY;ctx.fillStyle='rgba(0,0,0,.50)';ctx.strokeStyle='rgba(255,255,255,.85)';ctx.lineWidth=2;ctx.fillRect(x,y,w,h);ctx.strokeRect(x,y,w,h);ctx.fillStyle='white';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(text,x+w/2,y+h/2+1);ctx.restore();
-}
-function bindText(id,key){const el=$(id);el.value=state[key];el.addEventListener('input',()=>{state[key]=el.value; if(key==='description')$('#count').textContent=el.value.length; saveState();render()})}
-function bindRange(id,key){const el=$(id),out=el.nextElementSibling;el.value=state[key];out.value=state[key];el.addEventListener('input',()=>{state[key]=+el.value;out.value=el.value;saveState();render()})}
-function saveState(){try{localStorage.setItem('eorzeaSpotCard',JSON.stringify(state))}catch(e){}}
-function loadState(){try{const s=JSON.parse(localStorage.getItem('eorzeaSpotCard'));if(s){state={...defaults,...s};if(!Number.isFinite(state.plateWidth)||state.plateWidth>1100||state.plateWidth<420)state.plateWidth=820}}catch(e){}}
-function syncUI(){
- ['#spotName','#location','#condition','#description','#customLogo'].forEach((id,i)=>{const keys=['spotName','location','condition','description','customLogo'];$(id).value=state[keys[i]]});$('#count').textContent=state.description.length;
- $('#logoType').value=state.logoType;$('#customLogoWrap').style.display=state.logoType==='custom'?'grid':'none';
- ['titleX','titleY','descX','descY','logoX','logoY','titleSize','subSize','descSize','logoSize','plateWidth','plateOpacity','descWidth','boxOpacity','imageScale','imageX','imageY'].forEach(k=>{const el=$('#'+k);el.value=state[k];el.nextElementSibling.value=state[k]});
- ['titleAlign','descAlign'].forEach(k=>$('#'+k).value=state[k]);['showPlate','flipPlate','showBox','showCredit'].forEach(k=>$('#'+k).checked=state[k]);updatePositionButtons();
-}
-loadState();makePositions();syncUI();
-bindText('#spotName','spotName');bindText('#location','location');bindText('#condition','condition');bindText('#description','description');bindText('#customLogo','customLogo');
+loadState(); makePositions(); syncUI(); updateHint();
+bindText('#spotName','spotName'); bindText('#location','location'); bindText('#condition','condition'); bindText('#description','description'); bindText('#customLogo','customLogo');
 ['titleX','titleY','descX','descY','logoX','logoY','titleSize','subSize','descSize','logoSize','plateWidth','plateOpacity','descWidth','boxOpacity','imageScale','imageX','imageY'].forEach(k=>bindRange('#'+k,k));
-['titleAlign','descAlign'].forEach(k=>$('#'+k).addEventListener('change',e=>{state[k]=e.target.value;saveState();render()}));
-['showPlate','flipPlate','showBox','showCredit'].forEach(k=>$('#'+k).addEventListener('change',e=>{state[k]=e.target.checked;saveState();render()}));
-$('#logoType').addEventListener('change',e=>{state.logoType=e.target.value;$('#customLogoWrap').style.display=e.target.value==='custom'?'grid':'none';saveState();render()});
-$('#positionControls').addEventListener('click',e=>{const b=e.target.closest('.pos');if(!b)return;state[b.dataset.key]=b.dataset.pos;$('#preset').value='custom';updatePositionButtons();saveState();render()});
-$('#preset').addEventListener('change',e=>{const p=e.target.value;if(p==='a')Object.assign(state,{titlePos:'tl',descPos:'br',logoPos:'tr'});if(p==='b')Object.assign(state,{titlePos:'tr',descPos:'bl',logoPos:'tl'});if(p==='c')Object.assign(state,{titlePos:'tc',descPos:'bc',logoPos:'tr'});if(p==='d')Object.assign(state,{titlePos:'bl',descPos:'tr',logoPos:'tl'});updatePositionButtons();saveState();render()});
-$$('.tab-btn').forEach(b=>b.addEventListener('click',()=>{$$('.tab-btn').forEach(x=>x.classList.remove('active'));$$('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('#'+b.dataset.tab).classList.add('active')}));
-$('#upload').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;$('#fileName').textContent=f.name;const url=URL.createObjectURL(f);bg.onload=()=>{hasBg=true;state.imageScale=100;state.imageX=0;state.imageY=0;syncUI();render();URL.revokeObjectURL(url)};bg.src=url});
-let dragging=false,lastX=0,lastY=0;
-canvas.addEventListener('pointerdown',e=>{if(!hasBg)return;dragging=true;canvas.classList.add('dragging');canvas.setPointerCapture(e.pointerId);lastX=e.clientX;lastY=e.clientY});
-canvas.addEventListener('pointermove',e=>{if(!dragging)return;const rect=canvas.getBoundingClientRect(),sx=1600/rect.width,sy=900/rect.height;state.imageX+=(e.clientX-lastX)*sx;state.imageY+=(e.clientY-lastY)*sy;lastX=e.clientX;lastY=e.clientY;$('#imageX').value=Math.round(state.imageX);$('#imageX').nextElementSibling.value=Math.round(state.imageX);$('#imageY').value=Math.round(state.imageY);$('#imageY').nextElementSibling.value=Math.round(state.imageY);render()});
-canvas.addEventListener('pointerup',()=>{dragging=false;canvas.classList.remove('dragging');saveState()});canvas.addEventListener('pointercancel',()=>{dragging=false;canvas.classList.remove('dragging')});
-canvas.addEventListener('wheel',e=>{if(!hasBg)return;e.preventDefault();state.imageScale=Math.max(100,Math.min(300,state.imageScale+(e.deltaY<0?5:-5)));$('#imageScale').value=state.imageScale;$('#imageScale').nextElementSibling.value=state.imageScale;saveState();render()},{passive:false});
-function savePNG(){if(!hasBg&&!confirm('背景SSが未設定です。このまま保存しますか？'))return;const a=document.createElement('a');a.download=(state.spotName||'eorzea-spot-card')+'.png';a.href=canvas.toDataURL('image/png');a.click()}
-function resetAll(){if(!confirm('入力内容と設定を初期状態に戻しますか？'))return;state={...defaults};localStorage.removeItem('eorzeaSpotCard');hasBg=false;$('#upload').value='';$('#fileName').textContent='未選択';syncUI();render()}
-$('#saveTop').onclick=$('#saveBottom').onclick=savePNG;$('#resetTop').onclick=$('#resetBottom').onclick=resetAll;
-$('#resetImage').addEventListener('click',()=>{state.imageScale=100;state.imageX=0;state.imageY=0;syncUI();saveState();render()});
-plate.onload=render;render();
+['titleAlign','descAlign'].forEach(k=>$('#'+k).addEventListener('change',e=>{state[k]=e.target.value; saveState(); render()}));
+['showPlate','flipPlate','showBox','showCredit'].forEach(k=>$('#'+k).addEventListener('change',e=>{state[k]=e.target.checked; saveState(); render()}));
+$('#logoType').addEventListener('change',e=>{state.logoType=e.target.value; $('#customLogoWrap').style.display=e.target.value==='custom'?'grid':'none'; saveState(); render()});
+$('#positionControls').addEventListener('click',e=>{const b=e.target.closest('.pos'); if(!b) return; state[b.dataset.key]=b.dataset.pos; $('#preset').value='custom'; updatePositionButtons(); saveState(); render()});
+$('#preset').addEventListener('change',e=>{const p=e.target.value; if(p==='a') Object.assign(state,{titlePos:'tl',descPos:'br',logoPos:'tr'}); if(p==='b') Object.assign(state,{titlePos:'tr',descPos:'bl',logoPos:'tl'}); if(p==='c') Object.assign(state,{titlePos:'tc',descPos:'bc',logoPos:'tr'}); if(p==='d') Object.assign(state,{titlePos:'bl',descPos:'tr',logoPos:'tl'}); updatePositionButtons(); saveState(); render()});
+$$('.tab-btn').forEach(b=>b.addEventListener('click',()=>{$$('.tab-btn').forEach(x=>x.classList.remove('active')); $$('.panel').forEach(x=>x.classList.remove('active')); b.classList.add('active'); $('#'+b.dataset.tab).classList.add('active')}));
+$('#imageModeBtn').addEventListener('click',()=>setMode('image'));
+$('#layoutModeBtn').addEventListener('click',()=>setMode('layout'));
+$('#upload').addEventListener('change',e=>{const f=e.target.files[0]; if(!f) return; $('#fileName').textContent=f.name; const url=URL.createObjectURL(f); bg.onload=()=>{hasBg=true; state.imageScale=100; state.imageX=0; state.imageY=0; syncUI(); render(); URL.revokeObjectURL(url)}; bg.src=url});
+
+canvas.addEventListener('pointerdown',e=>{ const p=toCanvasPoint(e); if(ui.mode==='layout'){ const hit=hitTest(p.x,p.y); if(!hit) return; ui.dragType=hit; } else { if(!hasBg) return; ui.dragType='image'; } ui.dragging=true; canvas.classList.add('dragging'); canvas.setPointerCapture(e.pointerId); ui.lastX=p.x; ui.lastY=p.y; render(); });
+canvas.addEventListener('pointermove',e=>{ const p=toCanvasPoint(e); if(!ui.dragging){ if(ui.mode==='layout'){ ui.hoverType=hitTest(p.x,p.y); canvas.style.cursor=ui.hoverType ? 'grab' : 'default'; render(); } else { canvas.style.cursor=hasBg ? 'grab' : 'default'; } return; } const dx=p.x-ui.lastX, dy=p.y-ui.lastY; ui.lastX=p.x; ui.lastY=p.y; if(ui.dragType==='image'){ state.imageX+=dx; state.imageY+=dy; syncRangeValue('imageX',state.imageX); syncRangeValue('imageY',state.imageY); } else if(ui.dragType==='title'){ state.titleX+=dx; state.titleY+=dy; syncRangeValue('titleX',state.titleX); syncRangeValue('titleY',state.titleY); $('#preset').value='custom'; } else if(ui.dragType==='desc'){ state.descX+=dx; state.descY+=dy; syncRangeValue('descX',state.descX); syncRangeValue('descY',state.descY); $('#preset').value='custom'; } else if(ui.dragType==='logo'){ state.logoX+=dx; state.logoY+=dy; syncRangeValue('logoX',state.logoX); syncRangeValue('logoY',state.logoY); $('#preset').value='custom'; } render(); });
+function endDrag(){ if(!ui.dragging) return; ui.dragging=false; ui.dragType=null; canvas.classList.remove('dragging'); saveState(); render(); }
+canvas.addEventListener('pointerup',endDrag); canvas.addEventListener('pointercancel',endDrag); canvas.addEventListener('pointerleave',()=>{ if(!ui.dragging&&ui.mode==='layout'&&ui.hoverType){ ui.hoverType=null; render(); } });
+canvas.addEventListener('wheel',e=>{ if(ui.mode!=='image'||!hasBg) return; e.preventDefault(); state.imageScale=Math.max(100,Math.min(300,state.imageScale+(e.deltaY<0?5:-5))); syncRangeValue('imageScale',state.imageScale); saveState(); render(); },{passive:false});
+function savePNG(){ if(!hasBg&&!confirm('背景SSが未設定です。このまま保存しますか？')) return; const a=document.createElement('a'); a.download=(state.spotName||'eorzea-spot-card')+'.png'; a.href=canvas.toDataURL('image/png'); a.click(); }
+function resetAll(){ if(!confirm('入力内容と設定を初期状態に戻しますか？')) return; state={...defaults}; localStorage.removeItem('eorzeaSpotCard'); hasBg=false; $('#upload').value=''; $('#fileName').textContent='未選択'; syncUI(); render(); }
+$('#saveTop').onclick=$('#saveBottom').onclick=savePNG; $('#resetTop').onclick=$('#resetBottom').onclick=resetAll;
+$('#resetImage').addEventListener('click',()=>{ state.imageScale=100; state.imageX=0; state.imageY=0; syncUI(); saveState(); render(); });
+plate.onload=render; setMode('layout'); render();
 </script>
 </body>
 </html>
